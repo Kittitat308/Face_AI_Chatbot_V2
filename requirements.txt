@@ -1,0 +1,12 @@
+PySide6
+opencv-python
+insightface
+onnxruntime
+numpy
+SQLAlchemy
+psycopg[binary]
+python-dotenv
+google-genai
+requests
+sounddevice
+PyThaiTTS

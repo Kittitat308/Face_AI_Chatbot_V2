@@ -1,0 +1,1 @@
+CREATE DATABASE face_ai_chatbot;

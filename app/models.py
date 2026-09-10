@@ -47,6 +47,15 @@ class User(Base):
     require_password_after_face: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    camera_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    microphone_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    speaker_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,

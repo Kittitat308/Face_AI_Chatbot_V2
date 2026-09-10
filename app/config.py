@@ -44,7 +44,6 @@ class Settings:
     )
 
     login_scan_interval_ms: int = int(os.getenv("LOGIN_SCAN_INTERVAL_MS", "5000"))
-    presence_scan_interval_ms: int = int(os.getenv("PRESENCE_SCAN_INTERVAL_MS", "30000"))
     max_login_attempts: int = int(os.getenv("MAX_LOGIN_ATTEMPTS", "5"))
     lockout_minutes: int = int(os.getenv("LOCKOUT_MINUTES", "5"))
     whisper_record_seconds: int = int(os.getenv("WHISPER_RECORD_SECONDS", "6"))

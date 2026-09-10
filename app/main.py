@@ -2,7 +2,6 @@ import sys
 
 from PySide6.QtWidgets import (
     QApplication,
-    QMessageBox,
 )
 
 from app.config import (
@@ -31,16 +30,12 @@ def main():
         settings.app_name
     )
 
-    # The login window must not appear until VachanaTTS is fully loaded.
+    # Preload TTS when possible, but missing audio support must not prevent
+    # account login or text chat (important for headless Raspberry Pi setups).
     try:
         ThaiTTSService.prepare()
-    except Exception as error:
-        QMessageBox.critical(
-            None,
-            "TTS Error",
-            f"ไม่สามารถเตรียมระบบเสียง VachanaTTS ได้\n{error}",
-        )
-        return
+    except Exception:
+        pass
 
     window = MainWindow()
 

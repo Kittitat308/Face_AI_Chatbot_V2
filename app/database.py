@@ -36,6 +36,9 @@ def init_database():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP NULL",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS require_password_after_face BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS camera_enabled BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS microphone_enabled BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS speaker_enabled BOOLEAN NOT NULL DEFAULT TRUE",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username_exact ON users (username)",
         """
         DO $$

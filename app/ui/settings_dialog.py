@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from app.repositories import update_face_password_preference
+from app.repositories import update_user_settings
 
 
 class SettingsDialog(QDialog):
@@ -18,7 +18,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.user = user
         self.setWindowTitle("ตั้งค่า")
-        self.resize(560, 300)
+        self.resize(600, 430)
 
         user_button = QPushButton("ผู้ใช้")
         user_button.setEnabled(False)
@@ -39,9 +39,42 @@ class SettingsDialog(QDialog):
             "ทันทีหลังจดจำใบหน้าสำเร็จ"
         )
         description.setWordWrap(True)
+        device_title = QLabel("อุปกรณ์")
+        device_title.setObjectName("settingsTitle")
+        self.camera_enabled = QCheckBox("เปิดกล้องตรวจสอบผู้ใช้ในหน้า Chatbot")
+        self.microphone_enabled = QCheckBox("เปิดไมโครโฟนสำหรับพิมพ์ด้วยเสียง")
+        self.speaker_enabled = QCheckBox("เปิดลำโพงสำหรับเสียงต้อนรับ")
+        self.camera_enabled.setChecked(bool(getattr(user, "camera_enabled", True)))
+        self.microphone_enabled.setChecked(
+            bool(getattr(user, "microphone_enabled", True))
+        )
+        self.speaker_enabled.setChecked(bool(getattr(user, "speaker_enabled", True)))
+        for switch in (
+            self.require_password,
+            self.camera_enabled,
+            self.microphone_enabled,
+            self.speaker_enabled,
+        ):
+            switch.setObjectName("settingsSwitch")
+        self.setStyleSheet(
+            """
+            QCheckBox#settingsSwitch::indicator { width: 42px; height: 22px; }
+            QCheckBox#settingsSwitch::indicator:unchecked {
+                border-radius: 11px; background: #555555;
+            }
+            QCheckBox#settingsSwitch::indicator:checked {
+                border-radius: 11px; background: #19c37d;
+            }
+            """
+        )
         content_layout.addWidget(title)
         content_layout.addWidget(self.require_password)
         content_layout.addWidget(description)
+        content_layout.addSpacing(14)
+        content_layout.addWidget(device_title)
+        content_layout.addWidget(self.camera_enabled)
+        content_layout.addWidget(self.microphone_enabled)
+        content_layout.addWidget(self.speaker_enabled)
         content_layout.addStretch()
 
         buttons = QDialogButtonBox(
@@ -63,8 +96,12 @@ class SettingsDialog(QDialog):
                 "กรุณาตั้งรหัสผ่านใน Profile ก่อนเปิดตัวเลือกนี้",
             )
             return
-        updated = update_face_password_preference(
-            self.user.id, self.require_password.isChecked()
+        updated = update_user_settings(
+            self.user.id,
+            self.require_password.isChecked(),
+            self.camera_enabled.isChecked(),
+            self.microphone_enabled.isChecked(),
+            self.speaker_enabled.isChecked(),
         )
         if updated is None:
             QMessageBox.critical(self, "บันทึกไม่สำเร็จ", "ไม่พบบัญชีผู้ใช้")

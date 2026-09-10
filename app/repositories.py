@@ -206,6 +206,26 @@ def update_face_password_preference(user_id: int, required: bool):
         return user
 
 
+def update_user_settings(
+    user_id: int,
+    require_password_after_face: bool,
+    camera_enabled: bool,
+    microphone_enabled: bool,
+    speaker_enabled: bool,
+):
+    with SessionLocal() as db:
+        user = db.get(User, user_id)
+        if user is None:
+            return None
+        user.require_password_after_face = bool(require_password_after_face)
+        user.camera_enabled = bool(camera_enabled)
+        user.microphone_enabled = bool(microphone_enabled)
+        user.speaker_enabled = bool(speaker_enabled)
+        db.commit()
+        db.refresh(user)
+        return user
+
+
 def get_user_by_identifier(identifier: str):
     identifier = normalize_identifier(identifier)
     if not identifier:

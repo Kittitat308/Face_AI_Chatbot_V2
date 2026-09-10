@@ -176,7 +176,9 @@ class FaceLoginWidget(QWidget):
                 if user.require_password_after_face:
                     self.open_password_dialog(user)
                 else:
-                    self.stop()
+                    # Keep VideoCapture open. MainWindow transfers this same
+                    # camera to post-login monitoring without a slow reopen.
+                    self.pause_camera()
                     self.logged_in.emit(user)
                 return
 
@@ -202,13 +204,13 @@ class FaceLoginWidget(QWidget):
 
     def open_password_dialog(self, user):
         self.dialog_open = True
-        self.stop()
+        self.pause_camera()
         dialog = PasswordDialog(user, self)
         if dialog.exec() and dialog.authenticated_user is not None:
             self.logged_in.emit(dialog.authenticated_user)
             return
         self.dialog_open = False
-        self.start()
+        self.resume_camera()
 
 
     def open_manual_login(self):
@@ -216,14 +218,14 @@ class FaceLoginWidget(QWidget):
             return
         camera_was_available = self.camera_available
         self.dialog_open = True
-        self.stop()
+        self.pause_camera()
         dialog = ManualLoginDialog(self)
         if dialog.exec() and dialog.authenticated_user is not None:
             self.logged_in.emit(dialog.authenticated_user)
             return
         self.dialog_open = False
         if camera_was_available:
-            self.start()
+            self.resume_camera()
 
 
     def show_frame(
@@ -285,6 +287,10 @@ class FaceLoginWidget(QWidget):
             return
 
         if dialog.exec():
+            self.camera = dialog.take_camera_for_monitoring()
+            self.camera_available = bool(
+                self.camera is not None and self.camera.isOpened()
+            )
             self.logged_in.emit(
                 dialog.created_user
             )
@@ -294,9 +300,7 @@ class FaceLoginWidget(QWidget):
 
 
     def stop(self):
-
-        self.timer.stop()
-        self.preview_timer.stop()
+        self.pause_camera()
 
         if self.camera:
 
@@ -304,6 +308,30 @@ class FaceLoginWidget(QWidget):
 
             self.camera = None
         self.camera_available = False
+
+
+    def pause_camera(self):
+        self.timer.stop()
+        self.preview_timer.stop()
+
+
+    def resume_camera(self):
+        if self.camera is not None and self.camera.isOpened():
+            self.camera_available = True
+            self.preview_timer.start(80)
+            self.timer.start(settings.login_scan_interval_ms)
+            return
+        self.start()
+
+
+    def take_camera_for_monitoring(self):
+        """Transfer ownership without releasing/reopening the notebook camera."""
+        self.pause_camera()
+        camera = self.camera
+        self.camera = None
+        self.camera_available = False
+        self.last_frame = None
+        return camera
 
 
     def closeEvent(

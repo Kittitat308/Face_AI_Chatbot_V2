@@ -22,11 +22,23 @@ class WhisperSTTService:
             import sounddevice as sd
         except ImportError as error:
             raise RuntimeError("ยังไม่ได้ติดตั้ง sounddevice กรุณาติดตั้ง requirements.txt") from error
+        try:
+            sd.query_devices(kind="input")
+        except Exception as error:
+            raise RuntimeError("ไม่พบไมโครโฟนที่พร้อมใช้งาน") from error
         if not self.executable.exists() or not self.model.exists():
             raise RuntimeError("ไม่พบ whisper.cpp หรือโมเดลภาษา")
         frames = int(settings.whisper_record_seconds * self.SAMPLE_RATE)
-        audio = sd.rec(frames, samplerate=self.SAMPLE_RATE, channels=1, dtype="float32")
-        sd.wait()
+        try:
+            audio = sd.rec(
+                frames,
+                samplerate=self.SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+            )
+            sd.wait()
+        except Exception as error:
+            raise RuntimeError("ไม่สามารถบันทึกเสียงจากไมโครโฟนได้") from error
         pcm = np.clip(audio[:, 0] * 32767, -32768, 32767).astype(np.int16)
         temp_dir = tempfile.mkdtemp(prefix="face_ai_stt_")
         wav_path = Path(temp_dir) / "input.wav"

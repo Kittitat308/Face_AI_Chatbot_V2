@@ -1,8 +1,14 @@
 import threading
-import winsound
+import wave
 from pathlib import Path
 
+import numpy as np
 from pythaitts import TTS
+
+try:
+    import winsound
+except ImportError:  # Raspberry Pi/Linux
+    winsound = None
 
 
 _engine = None
@@ -32,6 +38,31 @@ def _prepare_locked():
     return tts
 
 
+def _play_output_file():
+    if winsound is not None:
+        winsound.PlaySound(str(_output_file), winsound.SND_FILENAME)
+        return
+    try:
+        import sounddevice as sd
+        with wave.open(str(_output_file), "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            sample_rate = wav_file.getframerate()
+            frames = wav_file.readframes(wav_file.getnframes())
+        dtype_by_width = {1: np.uint8, 2: np.int16, 4: np.int32}
+        dtype = dtype_by_width.get(sample_width)
+        if dtype is None:
+            raise RuntimeError("รูปแบบไฟล์เสียงไม่รองรับ")
+        audio = np.frombuffer(frames, dtype=dtype)
+        if channels > 1:
+            audio = audio.reshape(-1, channels)
+        sd.query_devices(kind="output")
+        sd.play(audio, sample_rate)
+        sd.wait()
+    except Exception as error:
+        raise RuntimeError("ไม่พบลำโพงหรืออุปกรณ์เสียงที่พร้อมใช้งาน") from error
+
+
 class ThaiTTSService:
     """VachanaTTS female voice 2, matching the verified standalone example."""
 
@@ -54,10 +85,7 @@ class ThaiTTSService:
     def play_prepared(self):
         """Play the already-synthesized welcome without generation delay."""
         with _engine_lock:
-            winsound.PlaySound(
-                str(_output_file),
-                winsound.SND_FILENAME,
-            )
+            _play_output_file()
 
     def speak(self, text: str):
         with _engine_lock:
@@ -67,7 +95,4 @@ class ThaiTTSService:
                 speaker_idx="th_f_2",
                 filename=str(_output_file),
             )
-            winsound.PlaySound(
-                str(_output_file),
-                winsound.SND_FILENAME,
-            )
+            _play_output_file()

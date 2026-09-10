@@ -48,6 +48,7 @@ class CreateUserDialog(QDialog):
         )
 
         self.face_service = face_service
+        self.camera_handoff = None
 
         self.camera = cv2.VideoCapture(settings.camera_index)
         if not self.camera.isOpened():
@@ -294,8 +295,14 @@ class CreateUserDialog(QDialog):
                     user_id=user.id,
                     embedding=embedding,
                 )
+                self.face_service.cache_embedding(user, embedding)
 
             self.created_user = user
+
+            # Preserve the already-open camera for Chatbot monitoring. The
+            # parent login widget will take ownership after dialog.exec().
+            self.camera_handoff = self.camera
+            self.camera = None
 
             self.accept()
 
@@ -330,3 +337,9 @@ class CreateUserDialog(QDialog):
             self.camera.release()
             self.camera = None
         super().done(result)
+
+
+    def take_camera_for_monitoring(self):
+        camera = self.camera_handoff
+        self.camera_handoff = None
+        return camera

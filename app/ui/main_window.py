@@ -12,12 +12,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QStackedWidget,
     QMessageBox,
+    QDialog,
 )
 
 from app.repositories import (
     get_user_chats,
     create_chat,
     delete_chat,
+    get_user,
 )
 
 from app.ui.face_login import (
@@ -35,10 +37,60 @@ from app.ui.profile_dialog import (
 from app.ui.styles import (
     APP_STYLE,
 )
-from app.services.presence_service import FacePresenceMonitor
+from app.services.face_service import FaceService
+from app.services.presence_service import (
+    FacePresenceMonitor,
+    LOGOUT_COUNTDOWN_SECONDS,
+    MonitorAction,
+    NORMAL_SCAN_INTERVAL,
+    SessionMonitorState,
+    SWITCH_VERIFY_INTERVAL,
+    WARNING_SCAN_INTERVAL,
+)
 from app.services.tts_service import ThaiTTSService
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.workers import Worker
+
+
+class LogoutWarningDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.allow_close = False
+        self.setWindowTitle("กำลังออกจากระบบ")
+        self.setModal(True)
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        self.resize(390, 230)
+
+        title = QLabel("กำลังออกจากระบบ")
+        title.setAlignment(Qt.AlignCenter)
+        self.countdown_label = QLabel(str(LOGOUT_COUNTDOWN_SECONDS))
+        self.countdown_label.setAlignment(Qt.AlignCenter)
+        self.countdown_label.setStyleSheet("font-size: 46px; font-weight: 700;")
+        message = QLabel("กรุณามองกล้องเพื่อใช้งานต่อ")
+        message.setAlignment(Qt.AlignCenter)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(title)
+        layout.addWidget(self.countdown_label)
+        layout.addWidget(message)
+
+    def set_countdown(self, seconds):
+        self.countdown_label.setText(str(seconds))
+
+    def close_safely(self):
+        self.allow_close = True
+        self.accept()
+
+    def reject(self):
+        if self.allow_close:
+            super().reject()
+
+    def closeEvent(self, event):
+        if self.allow_close:
+            event.accept()
+        else:
+            event.ignore()
 
 
 class MainWindow(QMainWindow):
@@ -61,9 +113,16 @@ class MainWindow(QMainWindow):
         )
 
         self.current_user = None
+        self.face_service = None
+        self.pending_monitor_camera = None
+        self.welcome_audio_ready = False
 
         self.chat_widgets = {}
         self.presence_monitor = None
+        self.session_monitor_state = None
+        self.warning_dialog = None
+        self.warning_timer = QTimer(self)
+        self.warning_timer.timeout.connect(self.update_logout_countdown)
         self.thread_pool = QThreadPool.globalInstance()
 
         self.login_widget = (
@@ -90,10 +149,10 @@ class MainWindow(QMainWindow):
         error,
     ):
 
-        QMessageBox.critical(
+        QMessageBox.warning(
             self,
-            "Camera / Face Recognition Error",
-            error,
+            "กล้องไม่พร้อมใช้งาน",
+            f"{error}\nยังสามารถเข้าสู่ระบบด้วยบัญชีหรืออีเมลได้",
         )
 
 
@@ -102,29 +161,34 @@ class MainWindow(QMainWindow):
         user,
     ):
 
-        welcome = f"ยินดีต้อนรับค่ะ คุณ{user.display_name}"
-        try:
-            ThaiTTSService().prepare_text(welcome)
-        except Exception as error:
-            QMessageBox.critical(
-                self,
-                "TTS Error",
-                f"ไม่สามารถเตรียมเสียงต้อนรับได้\n{error}",
-            )
-            if getattr(self, "login_widget", None) is not None:
-                self.login_widget.start()
-            return
+        self.face_service = getattr(self.login_widget, "face_service", None)
+        take_camera = getattr(
+            self.login_widget,
+            "take_camera_for_monitoring",
+            None,
+        )
+        login_camera = take_camera() if take_camera is not None else None
+        self.welcome_audio_ready = False
 
         self.current_user = user
+        FaceService.update_cached_user(user)
+        self.session_monitor_state = SessionMonitorState(user.id)
+
+        # Start the monitoring thread before building/loading the chat page.
+        # VideoCapture can therefore open while the UI and chat history load.
+        if bool(getattr(user, "camera_enabled", True)):
+            self.pending_monitor_camera = login_camera
+            self.start_presence_monitor()
+        elif login_camera is not None:
+            login_camera.release()
 
         self.build_chat_interface()
 
         self.load_chats()
 
-        QTimer.singleShot(100, self.play_welcome)
-
-        # Let the Chatbot page render and the welcome voice start first.
-        QTimer.singleShot(250, self.start_presence_monitor)
+        # TTS synthesis can be slow. It must never delay camera startup or UI.
+        if bool(getattr(user, "speaker_enabled", True)):
+            self.prepare_welcome_in_background(user)
 
 
     def build_chat_interface(self):
@@ -263,6 +327,9 @@ class MainWindow(QMainWindow):
 
         self.chat_list.clear()
 
+        for widget in self.chat_widgets.values():
+            self.chat_stack.removeWidget(widget)
+            widget.deleteLater()
         self.chat_widgets.clear()
 
         chats = get_user_chats(
@@ -415,6 +482,8 @@ class MainWindow(QMainWindow):
             dialog.user
         )
 
+        FaceService.update_cached_user(self.current_user)
+
         self.update_profile_button()
 
 
@@ -422,10 +491,34 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.current_user, self)
         if dialog.exec():
             self.current_user = dialog.user
+            FaceService.update_cached_user(self.current_user)
+            microphone_enabled = bool(
+                getattr(self.current_user, "microphone_enabled", True)
+            )
+            for widget in self.chat_widgets.values():
+                widget.user = self.current_user
+                widget.set_microphone_enabled(microphone_enabled)
+
+            if bool(getattr(self.current_user, "camera_enabled", True)):
+                if self.presence_monitor is None:
+                    if self.session_monitor_state is None:
+                        self.session_monitor_state = SessionMonitorState(
+                            self.current_user.id
+                        )
+                    self.start_presence_monitor()
+            else:
+                self.cancel_logout_warning()
+                self.stop_presence_monitor()
+                if self.session_monitor_state is not None:
+                    self.session_monitor_state.reset_all()
 
 
     def play_welcome(self):
-        if self.current_user is None:
+        if (
+            self.current_user is None
+            or not self.welcome_audio_ready
+            or not bool(getattr(self.current_user, "speaker_enabled", True))
+        ):
             return
         worker = Worker(lambda: ThaiTTSService().play_prepared())
         worker.signals.error.connect(
@@ -434,9 +527,53 @@ class MainWindow(QMainWindow):
         self.thread_pool.start(worker)
 
 
-    def logout(self):
+    def prepare_welcome_in_background(self, user):
+        user_id = user.id
+        welcome = f"ยินดีต้อนรับค่ะ คุณ{user.display_name}"
 
+        def task():
+            ThaiTTSService().prepare_text(welcome)
+            return user_id
+
+        worker = Worker(task)
+        worker.signals.finished.connect(self.on_welcome_prepared)
+        worker.signals.error.connect(
+            lambda error, expected_user_id=user_id: self.on_welcome_error(
+                expected_user_id,
+                error,
+            )
+        )
+        self.thread_pool.start(worker)
+
+
+    def on_welcome_prepared(self, user_id):
+        if (
+            self.current_user is None
+            or self.current_user.id != user_id
+            or not bool(getattr(self.current_user, "speaker_enabled", True))
+        ):
+            return
+        self.welcome_audio_ready = True
+        self.play_welcome()
+
+
+    def on_welcome_error(self, user_id, error):
+        if self.current_user is None or self.current_user.id != user_id:
+            return
+        QMessageBox.warning(
+            self,
+            "ลำโพงไม่พร้อมใช้งาน",
+            f"ไม่สามารถเตรียมเสียงต้อนรับได้ แต่ยังใช้งาน Chatbot ได้\n{error}",
+        )
+
+
+    def logout_current_user(self):
+        self.cancel_logout_warning()
         self.stop_presence_monitor()
+
+        if self.session_monitor_state is not None:
+            self.session_monitor_state.reset_all()
+        self.session_monitor_state = None
 
         self.current_user = None
 
@@ -463,12 +600,27 @@ class MainWindow(QMainWindow):
         self.login_widget.start()
 
 
+    def logout(self):
+        self.logout_current_user()
+
+
     def start_presence_monitor(self):
-        if self.current_user is None:
+        if (
+            self.current_user is None
+            or not bool(getattr(self.current_user, "camera_enabled", True))
+        ):
             return
         self.stop_presence_monitor()
-        self.presence_monitor = FacePresenceMonitor(self.current_user.id, self)
-        self.presence_monitor.identity_lost.connect(self.on_identity_lost)
+        # Login has already prepared InsightFace. Reuse that instance after
+        # FaceLoginWidget stopped its camera to avoid a second model load.
+        self.presence_monitor = FacePresenceMonitor(
+            self.current_user.id,
+            self,
+            face_service=self.face_service,
+            camera=self.pending_monitor_camera,
+        )
+        self.pending_monitor_camera = None
+        self.presence_monitor.scan_result.connect(self.on_face_scan_result)
         self.presence_monitor.error.connect(self.on_presence_error)
         self.presence_monitor.start()
 
@@ -480,20 +632,103 @@ class MainWindow(QMainWindow):
             self.presence_monitor = None
 
 
-    def on_identity_lost(self, other_user):
-        if self.current_user is None:
+    def on_face_scan_result(self, result):
+        if self.current_user is None or self.session_monitor_state is None:
             return
-        self.stop_presence_monitor()
-        if other_user is None:
-            message = "ไม่พบใบหน้าของผู้ใช้ปัจจุบัน ระบบออกจากระบบแล้ว"
+
+        decision = self.session_monitor_state.process(result)
+
+        if decision.action == MonitorAction.CONTINUE:
+            self.cancel_logout_warning()
+            self.presence_monitor.set_interval(NORMAL_SCAN_INTERVAL)
+            return
+
+        if decision.action == MonitorAction.NO_FACE:
+            self.presence_monitor.set_interval(NORMAL_SCAN_INTERVAL)
+            return
+
+        if decision.action == MonitorAction.SHOW_WARNING:
+            self.show_logout_warning()
+            self.presence_monitor.set_interval(WARNING_SCAN_INTERVAL)
+            return
+
+        if decision.action == MonitorAction.VERIFY_SWITCH:
+            self.presence_monitor.set_interval(SWITCH_VERIFY_INTERVAL)
+            return
+
+        if decision.action == MonitorAction.SWITCH_USER:
+            self.switch_current_user(decision.user)
+            return
+
+        if decision.action == MonitorAction.LOGOUT_IMMEDIATELY:
+            self.logout_current_user()
+            return
+
+    def show_logout_warning(self):
+        if self.warning_dialog is not None:
+            return
+        self.session_monitor_state.countdown_seconds = LOGOUT_COUNTDOWN_SECONDS
+        self.warning_dialog = LogoutWarningDialog(self)
+        self.warning_dialog.set_countdown(LOGOUT_COUNTDOWN_SECONDS)
+        self.warning_dialog.show()
+        self.warning_dialog.raise_()
+        self.warning_dialog.activateWindow()
+        self.warning_timer.start(1000)
+
+
+    def update_logout_countdown(self):
+        if self.warning_dialog is None or self.session_monitor_state is None:
+            self.warning_timer.stop()
+            return
+        self.session_monitor_state.countdown_seconds -= 1
+        seconds = max(0, self.session_monitor_state.countdown_seconds)
+        self.warning_dialog.set_countdown(seconds)
+        if seconds == 0:
+            self.warning_timer.stop()
+            QTimer.singleShot(0, self.finish_countdown_logout)
+
+
+    def finish_countdown_logout(self):
+        if self.warning_dialog is not None and self.current_user is not None:
+            self.logout_current_user()
+
+
+    def cancel_logout_warning(self):
+        self.warning_timer.stop()
+        if self.warning_dialog is not None:
+            dialog = self.warning_dialog
+            self.warning_dialog = None
+            dialog.close_safely()
+            dialog.deleteLater()
+        if self.session_monitor_state is not None:
+            self.session_monitor_state.countdown_seconds = LOGOUT_COUNTDOWN_SECONDS
+
+
+    def switch_current_user(self, cached_user):
+        if cached_user is None or self.current_user is None:
+            return
+        user = get_user(cached_user.id) or cached_user
+        self.cancel_logout_warning()
+        self.current_user = user
+        FaceService.update_cached_user(user)
+        self.session_monitor_state.reset_all(current_user_id=user.id)
+        if bool(getattr(user, "camera_enabled", True)):
+            if self.presence_monitor is not None:
+                self.presence_monitor.set_current_user(user.id)
+                self.presence_monitor.set_interval(NORMAL_SCAN_INTERVAL)
+            else:
+                self.start_presence_monitor()
         else:
-            message = f"ตรวจพบผู้ใช้อื่น ({other_user.display_name}) ระบบออกจากระบบเพื่อยืนยันตัวตนใหม่"
-        QMessageBox.warning(self, "ออกจากระบบอัตโนมัติ", message)
-        self.logout()
+            self.stop_presence_monitor()
+        self.update_profile_button()
+        self.load_chats()
 
 
     def on_presence_error(self, error):
         self.stop_presence_monitor()
+        self.cancel_logout_warning()
+        if self.session_monitor_state is not None:
+            self.session_monitor_state.reset_all()
         QMessageBox.warning(
             self,
             "กล้องไม่พร้อมใช้งาน",

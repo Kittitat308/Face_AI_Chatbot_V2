@@ -133,8 +133,10 @@ class ChatWidget(QWidget):
         )
 
         self.mic_button = QPushButton("🎤")
-        self.mic_button.setToolTip("พูดข้อความ (บันทึก 6 วินาที)")
         self.mic_button.clicked.connect(self.start_voice_input)
+        self.set_microphone_enabled(
+            bool(getattr(self.user, "microphone_enabled", True))
+        )
 
         bottom_layout = QHBoxLayout()
 
@@ -166,6 +168,8 @@ class ChatWidget(QWidget):
 
 
     def start_voice_input(self):
+        if not self.microphone_enabled:
+            return
         self.mic_button.setEnabled(False)
         self.mic_button.setText("●")
         self.input.setPlaceholderText("กำลังฟังเสียง...")
@@ -175,17 +179,26 @@ class ChatWidget(QWidget):
         self.thread_pool.start(worker)
 
 
+    def set_microphone_enabled(self, enabled):
+        self.microphone_enabled = bool(enabled)
+        self.mic_button.setEnabled(self.microphone_enabled)
+        if self.microphone_enabled:
+            self.mic_button.setToolTip("พูดข้อความ (บันทึก 6 วินาที)")
+        else:
+            self.mic_button.setToolTip("ไมโครโฟนถูกปิดในการตั้งค่า")
+
+
     def on_transcript(self, text):
         current = self.input.toPlainText().strip()
         self.input.setPlainText((current + " " + text).strip())
-        self.mic_button.setEnabled(True)
+        self.mic_button.setEnabled(self.microphone_enabled)
         self.mic_button.setText("🎤")
         self.input.setPlaceholderText("ส่งข้อความถึง Gemini...")
         self.input.setFocus()
 
 
     def on_stt_error(self, error):
-        self.mic_button.setEnabled(True)
+        self.mic_button.setEnabled(self.microphone_enabled)
         self.mic_button.setText("🎤")
         self.input.setPlaceholderText("ส่งข้อความถึง Gemini...")
         QMessageBox.warning(self, "รับเสียงไม่สำเร็จ", error)
